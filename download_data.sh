@@ -1,0 +1,1 @@
+datasets download genome accession $(cat accession/Prochlorococcus_marinus.txt | sed -z 's/\n/ /g')

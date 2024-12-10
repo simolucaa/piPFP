@@ -149,6 +149,7 @@
 #include <vector>
 // #include <unordered_map>
 #include <oneapi/tbb/concurrent_unordered_map.h>
+#include <oneapi/tbb/concurrent_set.h>
 #ifdef GZSTREAM
 #include <gzstream.h>
 #endif
@@ -188,8 +189,7 @@ struct Args {
    string inputFileName = "";
    int w = 10;            // sliding window size and its default 
    int p = 100;           // modulus for establishing stopping w-tuples 
-   bool SAinfo = false;   // compute SA information
-   bool compress = false; // parsing called in compress mode 
+   string outputFileName = ""; // output file name 
    int th=0;              // number of helper threads
    int verbose=0;         // verbosity level 
 };
@@ -248,10 +248,10 @@ struct KR_window {
 };
 // -----------------------------------------------------------
 
-static void save_update_word(Args& arg, uint64_t currenWordLength, uint64_t hash, concurrent_unordered_map<uint64_t,uint64_t>&  freq, FILE *tmp_parse_file, FILE *last, FILE *sa, uint64_t &pos);
+static void save_update_word(Args& arg, uint64_t currenWordLength, uint64_t hash, concurrent_unordered_map<uint64_t,concurrent_set<uint32_t>>&  freq, FILE *tmp_parse_file, FILE *last, FILE *sa, uint64_t &pos);
 
 // #ifndef NOTHREADS
-#include "newscan_faster.hpp"
+#include "newscan_faster_growth.hpp"
 // #endif
 
 
@@ -273,14 +273,21 @@ static void save_update_word(Args& arg, uint64_t currenWordLength, uint64_t hash
 
 // save current word in the freq map and update it leaving only the 
 // last minsize chars which is the overlap with next word  
-static void save_update_word(Args& arg, uint64_t currentWordLength, uint64_t hash, concurrent_unordered_map<uint64_t,uint64_t>& freq, FILE *tmp_parse_file, FILE *last, FILE *sa, uint64_t &pos)
+static void save_update_word(Args& arg, uint64_t currentSequence, uint64_t hash, concurrent_unordered_map<uint64_t,concurrent_set<uint32_t>>& freq, FILE *tmp_parse_file, FILE *last, FILE *sa, uint64_t &pos)
 {
-  size_t minsize = arg.w; 
-  assert(pos==0 || currentWordLength > minsize);
-  if(currentWordLength <= minsize) return;
+  // size_t minsize = arg.w; 
+  // assert(pos==0 || currentWordLength > minsize);
+  // if(currentWordLength <= minsize) return;
 
   // freq[hash] = currentWordLength;
-  freq.insert({hash, currentWordLength});
+  // freq.insert({hash, currentWordLength});
+#ifndef NOTHREADS
+  xpthread_mutex_lock(&map_mutex,__LINE__,__FILE__);
+#endif 
+  freq[hash].insert(currentSequence);
+#ifndef NOTHREADS
+  xpthread_mutex_unlock(&map_mutex,__LINE__,__FILE__);
+#endif
   // currentWordLength = minsize;
 }
 
@@ -288,7 +295,7 @@ static void save_update_word(Args& arg, uint64_t currentWordLength, uint64_t has
 
 // prefix free parse of file fnam. w is the window size, p is the modulus 
 // use a KR-hash as the word ID that is immediately written to the parse file
-uint64_t process_file(Args& arg, concurrent_unordered_map<uint64_t,uint64_t>& wordFreq)
+uint64_t process_file(Args& arg, concurrent_unordered_map<uint64_t,concurrent_set<uint32_t>>& wordFreq)
 {
   //open a, possibly compressed, input file
   string fnam = arg.inputFileName;
@@ -327,23 +334,33 @@ uint64_t process_file(Args& arg, concurrent_unordered_map<uint64_t,uint64_t>& wo
   uint64_t currentHash = Dollar;
   const uint64_t prime = 27162335252586509;
   uint64_t parseWords = 0;
+  uint32_t seqNumber = 0;
   while( (c = f.get()) != EOF ) {
-    if(c<=Dollar && !arg.compress) {
-      // if we are not simply compressing then we cannot accept 0,1,or 2
-      cerr << "Invalid char found in input file. Exiting...\n"; exit(1);
-    }
-    currentWordLength++;
-    currentHash += (256*currentHash + c) % prime;
-    // word.append(1,c);
-    uint64_t hash = krw.addchar(c);
-    if(hash%arg.p==0) {
-      // end of word, save it and write its full hash to the output file
-      // cerr << "~"<< c << "~ " << hash << " ~~ <" << word << "> ~~ <" << krw.get_window() << ">" <<  endl;
-      save_update_word(arg,currentWordLength,currentHash,wordFreq,g,last_file,sa_file,pos);
+    // if(c<=Dollar && !arg.compress) {
+    //   // if we are not simply compressing then we cannot accept 0,1,or 2
+    //   cerr << "Invalid char found in input file. Exiting...\n"; exit(1);
+    // }
+    if (c == '\n') {
+      save_update_word(arg,seqNumber,currentHash,wordFreq,g,last_file,sa_file,pos);
       currentWordLength = arg.w;
       currentHash = kr_hash(krw.get_window());
       parseWords++;
-    }    
+      seqNumber++;
+    }
+    else {
+      currentWordLength++;
+      currentHash += (256*currentHash + c) % prime;
+      // word.append(1,c);
+      uint64_t hash = krw.addchar(c);
+      if(hash%arg.p==0) {
+        // end of word, save it and write its full hash to the output file
+        // cerr << "~"<< c << "~ " << hash << " ~~ <" << word << "> ~~ <" << krw.get_window() << ">" <<  endl;
+        save_update_word(arg,seqNumber,currentHash,wordFreq,g,last_file,sa_file,pos);
+        currentWordLength = arg.w;
+        currentHash = kr_hash(krw.get_window());
+        parseWords++;
+      }    
+    }
   }
   // virtually add w null chars at the end of the file and add the last word in the dict
   // word.append(arg.w,Dollar);
@@ -351,18 +368,9 @@ uint64_t process_file(Args& arg, concurrent_unordered_map<uint64_t,uint64_t>& wo
     currentWordLength++;
     currentHash += (256*currentHash + Dollar) % prime;
   }
-  save_update_word(arg,currentWordLength,currentHash,wordFreq,g,last_file,sa_file,pos);
-  // close input and output files 
-  // if(sa_file) if(fclose(sa_file)!=0) die("Error closing SA file");
-  // if(last_file) if(fclose(last_file)!=0) die("Error closing last file");  
-  // if(fclose(g)!=0) die("Error closing parse file");
-  // if(arg.compress)
-  //   assert(pos==krw.tot_char);
-  // else 
-  //   assert(pos==krw.tot_char+arg.w);
-  // if(pos!=krw.tot_char+arg.w) cerr << "Pos: " << pos << " tot " << krw.tot_char << endl;
+  save_update_word(arg,seqNumber,currentHash,wordFreq,g,last_file,sa_file,pos);
   f.close();
-  return parseWords;
+  return seqNumber;
 }
 
 // function used to compare two string pointers
@@ -370,80 +378,6 @@ bool pstringCompare(const string *a, const string *b)
 {
   return *a <= *b;
 }
-
-// given the sorted dictionary and the frequency map write the dictionary and occ files
-// also compute the 1-based rank for each hash
-// void writeDictOcc(Args &arg, concurrent_unordered_map<uint64_t,uint64_t> &wfreq, vector<const string *> &sortedDict)
-// {
-//   assert(sortedDict.size() == wfreq.size());
-//   FILE *fdict, *fwlen=NULL, *focc=NULL;
-//   // open dictionary and occ files
-//   if(arg.compress) {
-//     fdict = open_aux_file(arg.inputFileName.c_str(),EXTDICZ,"wb");
-//     fwlen = open_aux_file(arg.inputFileName.c_str(),EXTDZLEN,"wb");
-//   }
-//   else {
-//     fdict = open_aux_file(arg.inputFileName.c_str(),EXTDICT,"wb");
-//     focc = open_aux_file(arg.inputFileName.c_str(),EXTOCC,"wb");
-//   }
-  
-//   word_int_t wrank = 1; // current word rank (1 based)
-//   for(auto x: sortedDict) {          // *x is the string representing the dictionary word
-//     const char *word = (*x).data();       // current dictionary word
-//     size_t len = (*x).size();  // offset and length of word
-//     assert(len>(size_t)arg.w || arg.compress);
-//     uint64_t hash = kr_hash(*x);
-//     auto& wf = wfreq.at(hash);
-//     assert(wf.occ>0);
-//     size_t s = fwrite(word,1,len, fdict);
-//     if(s!=len) die("Error writing to DICT file");
-//     if(arg.compress) {
-//       s = fwrite(&len,4,1,fwlen);
-//       if(s!=1) die("Error writing to WLEN file");
-//     }
-//     else {
-//       if(fputc(EndOfWord,fdict)==EOF) die("Error writing EndOfWord to DICT file");
-//       s = fwrite(&wf.occ,sizeof(wf.occ),1, focc);
-//       if(s!=1) die("Error writing to OCC file");
-//     }
-//     assert(wf.rank==0); // word should have no rank at this time
-//     wf.rank = wrank++;  // save the rank of the current word
-//   }
-//   if(arg.compress) {
-//     if(fclose(fwlen)!=0) die("Error closing WLEN file");
-//   }
-//   else {
-//     if(fputc(EndOfDict,fdict)==EOF) die("Error writing EndOfDict to DICT file");
-//     if(fclose(focc)!=0) die("Error closing OCC file");
-//   }
-//   if(fclose(fdict)!=0) die("Error closing DICT file");
-// }
-
-// void remapParse(Args &arg, concurrent_unordered_map<uint64_t,uint64_t> &wfreq)
-// {
-//   // open parse files. the old parse can be stored in a single file or in multiple files
-//   mFile *moldp = mopen_aux_file(arg.inputFileName.c_str(), EXTPARS0, arg.th);
-//   FILE *newp = open_aux_file(arg.inputFileName.c_str(), EXTPARSE, "wb");
-
-//   // recompute occ as an extra check 
-//   vector<occ_int_t> occ(wfreq.size()+1,0); // ranks are zero based 
-//   uint64_t hash;
-//   while(true) {
-//     size_t s = mfread(&hash,sizeof(hash),1,moldp);
-//     if(s==0) break;
-//     if(s!=1) die("Unexpected parse EOF");
-//     word_int_t rank = wfreq.at(hash).rank;
-//     occ[rank]++;
-//     s = fwrite(&rank,sizeof(rank),1,newp);
-//     if(s!=1) die("Error writing to new parse file");
-//   }
-//   if(fclose(newp)!=0) die("Error closing new parse file");
-//   if(mfclose(moldp)!=0) die("Error closing old parse segment");
-//   // check old and recomputed occ's coincide 
-//   for(auto& x : wfreq)
-//     assert(x.second.occ == occ[x.second.rank]);
-// }
- 
 
 
 
@@ -455,9 +389,7 @@ void print_help(char** argv, Args &args) {
         #ifndef NOTHREADS
         << "\t-t M\tnumber of helper threads, def. none " << endl
         #endif        
-        << "\t-c  \tdiscard redundant information" << endl
-        << "\t-h  \tshow help and exit" << endl
-        << "\t-s  \tcompute suffix array info" << endl;
+        << "\t-o\t output name for the histogram and growth files (.hist and .growth), def. <input filename>" << endl;
   #ifdef GZSTREAM
   cout << "If the input file is gzipped it is automatically extracted\n";
   #endif
@@ -475,12 +407,8 @@ void parseArgs( int argc, char** argv, Args& arg ) {
   puts("");
 
    string sarg;
-   while ((c = getopt( argc, argv, "p:w:sht:vc") ) != -1) {
+   while ((c = getopt( argc, argv, "p:w:ht:vo:") ) != -1) {
       switch(c) {
-        case 's':
-        arg.SAinfo = true; break;
-        case 'c':
-        arg.compress = true; break;
         case 'w':
         sarg.assign( optarg );
         arg.w = stoi( sarg ); break;
@@ -492,6 +420,8 @@ void parseArgs( int argc, char** argv, Args& arg ) {
         arg.th = stoi( sarg ); break;
         case 'v':
            arg.verbose++; break;
+        case 'o':
+            arg.outputFileName.assign( optarg ); break;
         case 'h':
            print_help(argv, arg); exit(1);
         case '?':
@@ -543,15 +473,15 @@ int main(int argc, char** argv)
   time_t start_main = time(NULL);
   time_t start_wc = start_main;  
   // init sorted map counting the number of occurrences of each word
-  concurrent_unordered_map<uint64_t,uint64_t> wordFreq;  
-  pair<uint64_t, uint64_t> totCharAndWord;
+  concurrent_unordered_map<uint64_t,concurrent_set<uint32_t>> wordFreq;  
+  uint32_t totSeqNumber = 0;
   uint64_t totChar;
 
   // ------------ parsing input file 
   try {
       if(arg.th==0) {
         cout << "Parsing input file\n";
-        totCharAndWord.second = process_file(arg,wordFreq);
+        totSeqNumber = process_file(arg,wordFreq);
       }
       else {
         cout << "Parsing input file using " << arg.th << " threads\n";
@@ -559,7 +489,7 @@ int main(int argc, char** argv)
         cerr << "Sorry, this is the no-threads executable and you requested " << arg.th << " threads\n";
         exit(EXIT_FAILURE);
         #else
-        totCharAndWord = mt_process_file(arg,wordFreq);
+        totSeqNumber = mt_process_file(arg,wordFreq);
         #endif
       }
   }
@@ -587,15 +517,42 @@ int main(int argc, char** argv)
   // fill array
   uint64_t sumLen = 0;
   // uint64_t totWord = 0;
+  uint64_t *histogram = new uint64_t[totSeqNumber+1]();
   for (auto& x: wordFreq) {
-    // sumLen += x.second.str.size();
-    sumLen += x.second;
-    // totWord += x.second.occ;
-    // dictArray.push_back(&x.second.str);
+    histogram[x.second.size()]++;
   }
+  // print to file the histogram
+  ofstream histFile(arg.outputFileName + ".hist");
+  for (uint32_t i = 1; i < totSeqNumber; i++) {
+    histFile << histogram[i] << endl;
+  }
+  histFile.close();
+
+  // compute pangenome growth
+  ofstream growthFile(arg.outputFileName + ".growth");
+  double tot = 0;
+  double n_fall_m = 0;
+  for (uint32_t i = 0; i < totSeqNumber+1; i++) tot += histogram[i];
+
+  double* F = new double[totSeqNumber+1];
+  for (uint32_t i = 0; i < totSeqNumber+1; i++) F[i] = 0;
+
+  for (uint32_t m = 1; m <= totSeqNumber; m++) {
+      double y = 0;
+      n_fall_m += log(totSeqNumber-m+1);
+      for (uint32_t i = 1; i <= totSeqNumber-m; i++) {
+          F[i] += log((double)totSeqNumber-(double)m-(double)i+1);
+          y += exp(log(histogram[i]) + F[i] - n_fall_m);
+      }
+      if (m > 1) growthFile << " ";
+      growthFile << (tot - y);
+  }
+  cout <<  '\n' << flush;
+
+
   // assert(dictArray.size()==totDWord);
-  cout << "Sum of lenghts of dictionary words: " << sumLen << endl; 
-  cout << "Total number of words: " << totCharAndWord.second + 1 << endl; 
+  // cout << "Sum of lenghts of dictionary words: " << sumLen << endl; 
+  // cout << "Total number of words: " << totCharAndWord.second + 1 << endl; 
   cout << "==== Elapsed time: " << difftime(time(NULL),start_main) << " wall clock seconds\n";        
   return 0;
 }
