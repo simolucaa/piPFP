@@ -149,12 +149,19 @@ uint32_t mt_process_file(
   vector<uint64_t> line_pos;
   line_pos.push_back(0);
   int c;
-  while ((c = f.get()) != EOF) {
-    if (c == '\n') {
-      line_pos.push_back(f.tellg());
-      line_pos.back()++;
-    }
+  // read line by line and store the starting position of each line
+  std::string line;
+  while (std::getline(f, line)) {
+    line_pos.push_back(f.tellg());
+    line_pos.back()++;
   }
+
+  /* while ((c = f.get()) != EOF) { */
+  /*   if (c == '\n') { */
+  /*     line_pos.push_back(f.tellg()); */
+  /*     line_pos.back()++; */
+  /*   } */
+  /* } */
 
   f.close();
 
