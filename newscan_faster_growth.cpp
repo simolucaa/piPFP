@@ -446,10 +446,10 @@ void parseArgs(int argc, char **argv, Args &arg) {
     cout << "Windows size must be at least 4\n";
     exit(1);
   }
-  if (arg.p < 10) {
-    cout << "Modulus must be at leas 10\n";
-    exit(1);
-  }
+  // if (arg.p < 10) {
+  //   cout << "Modulus must be at leas 10\n";
+  //   exit(1);
+  // }
 #ifdef NOTHREADS
   if (arg.th != 0) {
     cout << "The NT version cannot use threads\n";
