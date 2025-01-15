@@ -132,23 +132,21 @@
  * using the unparsz tool.
  *
  */
-#include <algorithm>
 #include <assert.h>
 #include <cstdint>
 #include <ctime>
-#include <errno.h>
-#include <fstream>
-#include <iomanip>
 #include <iostream>
-#include <random>
-#include <sstream>
-#include <stdexcept>
 #include <stdint.h>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <unordered_map>
 #include <vector>
+
+#include <oneapi/tbb/blocked_range.h>
+#include <oneapi/tbb/concurrent_hash_map.h>
+#include <oneapi/tbb/parallel_for.h>
+
 #ifdef GZSTREAM
 #include <gzstream.h>
 #endif
@@ -157,6 +155,7 @@ extern "C" {
 }
 
 using namespace std;
+using namespace oneapi::tbb;
 // using namespace __gnu_cxx;
 
 // =============== algorithm limits ===================
@@ -478,6 +477,37 @@ void parseArgs(int argc, char **argv, Args &arg) {
 #endif
 }
 
+class ProcessWordFreq {
+
+  Args &arg;
+  vector<unordered_map<uint64_t, pair<uint32_t, uint32_t>>> &wordFreq;
+  concurrent_hash_map<uint64_t, pair<uint32_t, uint32_t>> &cumulativeWordFreq;
+
+public:
+  void operator()(const blocked_range<uint32_t> &r) const {
+    concurrent_hash_map<uint64_t, pair<uint32_t, uint32_t>>::accessor a;
+    for (uint32_t i = r.begin(); i != r.end(); i++) {
+      for (auto &y : wordFreq[i]) {
+        auto inserted = cumulativeWordFreq.insert(a, y);
+        if (inserted == false) {
+          a->second.second += y.second.second;
+        }
+        a.release();
+      }
+      // delete hash map
+      std::unordered_map<uint64_t, pair<uint32_t, uint32_t>>().swap(
+          wordFreq[i]);
+    }
+  }
+
+  ProcessWordFreq(
+      Args &arg,
+      vector<unordered_map<uint64_t, pair<uint32_t, uint32_t>>> &wordFreq,
+      concurrent_hash_map<uint64_t, pair<uint32_t, uint32_t>>
+          &cumulativeWordFreq)
+      : arg(arg), wordFreq(wordFreq), cumulativeWordFreq(cumulativeWordFreq) {}
+};
+
 int main(int argc, char **argv) {
   // translate command line parameters
   Args arg;
@@ -534,19 +564,24 @@ int main(int argc, char **argv) {
 
   // merge all hash maps into one
   auto time1 = chrono::high_resolution_clock::now();
-  unordered_map<uint64_t, pair<uint32_t, uint32_t>> cumulativeWordFreq;
-  uint32_t cThr = 0;
-  for (auto &x : wordFreq) {
-    for (auto &y : x) {
-      auto inserted = cumulativeWordFreq.insert(y);
-      if (inserted.second == false) {
-        inserted.first->second.second += y.second.second;
-      }
-    }
-    // delete hash map
-    std::unordered_map<uint64_t, pair<uint32_t, uint32_t>>().swap(x);
-    cThr++;
-  }
+  concurrent_hash_map<uint64_t, pair<uint32_t, uint32_t>> cumulativeWordFreq;
+  concurrent_hash_map<uint64_t, pair<uint32_t, uint32_t>>::accessor a;
+  parallel_for(blocked_range<uint32_t>(0, arg.th),
+               ProcessWordFreq(arg, wordFreq, cumulativeWordFreq));
+
+  /* for (auto &x : wordFreq) { */
+  /*   for (auto &y : x) { */
+  /*     auto inserted = cumulativeWordFreq.insert(y); */
+  /*     if (inserted.second == false) { */
+  /*       inserted.first->second.second += y.second.second; */
+  /*     } */
+  /*   } */
+  /*   // delete hash map */
+  /*   std::unordered_map<uint64_t, pair<uint32_t, uint32_t>>().swap(x); */
+  /* } */
+  // delete vector of hash maps
+  std::vector<unordered_map<uint64_t, pair<uint32_t, uint32_t>>>().swap(
+      wordFreq);
   auto time2 = chrono::high_resolution_clock::now();
   cout << "Time to merge: "
        << chrono::duration_cast<chrono::milliseconds>(time2 - time1).count()
@@ -609,12 +644,13 @@ int main(int argc, char **argv) {
 //   cout << "Writing plain dictionary and occ file\n";
 //   writeDictOcc(arg, wordFreq, dictArray);
 //   dictArray.clear(); // reclaim memory
-//   cout << "Dictionary construction took: " << difftime(time(NULL),start_wc)
+//   cout << "Dictionary construction took: " <<
+//   difftime(time(NULL),start_wc)
 //   << " wall clock seconds\n";
 
 //   // remap parse file
 //   start_wc = time(NULL);
 //   cout << "Generating remapped parse file\n";
 //   remapParse(arg, wordFreq);
-//   cout << "Remapping parse file took: " << difftime(time(NULL),start_wc) << "
-//   wall clock seconds\n";
+//   cout << "Remapping parse file took: " << difftime(time(NULL),start_wc)
+//   << " wall clock seconds\n";
