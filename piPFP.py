@@ -134,7 +134,7 @@ def write_tsv_alpha(output_file, filename, window_size, modulus, alpha):
         writer.writerow([filename, window_size, modulus, alpha])
 
 def calculate_alpha(args): 
-    ###--- To uncomment if the version with input folder is implemented ---###
+    ###--- To uncomment when the version with input folder is implemented ---###
     # if os.path.isfile(args.input):
     #     logging.error("Please provide a folder instead of a file")
     #     exit(1)
@@ -188,11 +188,23 @@ if __name__ == "__main__":
     # Activate verbose mode
     if args.verbose:
         logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
-        logging.info("Verbose mode activated\n")
     else:
         logging.basicConfig(format="%(levelname)s: %(message)s")
 
+    # Check params
+    if args.window < 4 and args.modulus < 10:
+        logging.error("Window size must be at least 4 and modulus must be at least 10")
+        exit(1)
+    if args.window < 4:
+        logging.error("Window size must be at least 4")
+        exit(1)
+    if args.modulus < 10:
+        logging.error("Modulus must be at least 10")
+        exit(1)
+
     # Select mode
+    logging.info("Verbose mode activated\n")
+
     if args.mode == 'pi':
         calculate_pi(args)
     elif args.mode == 'openness':
