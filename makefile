@@ -1,51 +1,27 @@
 # compilation flags
 CXX_FLAGS=-std=c++20 -O3 -Wall -Wextra -g -march=native
+CXX_LIBS=-ldl -pthread -I/opt/homebrew/Cellar/tbb/2022.0.0/include -L/opt/homebrew/Cellar/tbb/2022.0.0/lib -ltbb
 CFLAGS=-O3 -Wall -std=c11 -g
 CC=gcc
-
-# main executables 
-EXECS=newscan.x pscan.x
-# executables not using threads (and therefore not needing the thread library)
-EXECS_NT=newscanNT.x 
+CCX=g++
 
 # targets not producing a file declared phony
-.PHONY: all clean lcp
+.PHONY: all clean 
 
-all: $(EXECS) $(EXECS_NT) newscanNT.x newscan.x newscan_faster.x newscan_fasterNT.x pscan.x newscan_faster_growthNT.x newscan_faster_growth.x newscan_faster_growth2.x newscan_faster_growth2NT.x newscan_faster_growth3.x newscan_faster_growth3NT.x
+all: piPFP.x piPFP_NT.x piPFP_growth.x piPFP_growth_NT.x
 
 
-newscanNT.x: newscan.cpp malloc_count.o utils.o
-	$(CXX) $(CXX_FLAGS) -o $@ $^ -ldl -DNOTHREADS
+piPFP.x: piPFP.cpp piPFP.hpp malloc_count.o utils.o xerrors.o 
+	$(CXX) $(CXX_FLAGS) -o $@ piPFP.cpp malloc_count.o utils.o xerrors.o $(CXX_LIBS)
 
-newscan.x: newscan.cpp newscan.hpp malloc_count.o utils.o xerrors.o 
-	$(CXX) $(CXX_FLAGS) -o $@ newscan.cpp malloc_count.o utils.o xerrors.o -ldl -pthread
+piPFP_NT.x: piPFP.cpp piPFP.hpp malloc_count.o utils.o xerrors.o
+	$(CXX) $(CXX_FLAGS) -o $@ piPFP.cpp malloc_count.o utils.o xerrors.o $(CXX_LIBS) -DNOTHREADS
 
-newscan_faster.x: newscan_faster.cpp newscan_faster.hpp malloc_count.o utils.o xerrors.o 
-	$(CXX) $(CXX_FLAGS) -o $@ newscan_faster.cpp malloc_count.o utils.o xerrors.o -ldl -pthread -ltbb
+piPFP_growth.x: piPFP_growth.cpp piPFP_growth.hpp malloc_count.o utils.o xerrors.o 
+	$(CXX) $(CXX_FLAGS) -o $@ piPFP_growth.cpp malloc_count.o utils.o xerrors.o $(CXX_LIBS)
 
-newscan_fasterNT.x: newscan_faster.cpp newscan_faster.hpp malloc_count.o utils.o xerrors.o 
-	$(CXX) $(CXX_FLAGS) -o $@ newscan_faster.cpp malloc_count.o utils.o xerrors.o -ldl -pthread -ltbb -DNOTHREADS
-
-newscan_faster_growth.x: newscan_faster_growth.cpp newscan_faster_growth.hpp malloc_count.o utils.o xerrors.o 
-	$(CXX) $(CXX_FLAGS) -o $@ newscan_faster_growth.cpp malloc_count.o utils.o xerrors.o -ldl -pthread -ltbb
-
-newscan_faster_growthNT.x: newscan_faster_growth.cpp newscan_faster_growth.hpp malloc_count.o utils.o xerrors.o 
-	$(CXX) $(CXX_FLAGS) -o $@ newscan_faster_growth.cpp malloc_count.o utils.o xerrors.o -ldl -pthread -ltbb -DNOTHREADS
-
-newscan_faster_growth2.x: newscan_faster_growth2.cpp newscan_faster_growth2.hpp malloc_count.o utils.o xerrors.o 
-	$(CXX) $(CXX_FLAGS) -o $@ newscan_faster_growth2.cpp malloc_count.o utils.o xerrors.o -ldl -pthread -ltbb
-
-newscan_faster_growth2NT.x: newscan_faster_growth2.cpp newscan_faster_growth2.hpp malloc_count.o utils.o xerrors.o 
-	$(CXX) $(CXX_FLAGS) -o $@ newscan_faster_growth2.cpp malloc_count.o utils.o xerrors.o -ldl -pthread -ltbb -DNOTHREADS
-
-newscan_faster_growth3.x: newscan_faster_growth3.cpp newscan_faster_growth3.hpp malloc_count.o utils.o xerrors.o 
-	$(CXX) $(CXX_FLAGS) -o $@ newscan_faster_growth3.cpp malloc_count.o utils.o xerrors.o -ldl -pthread -ltbb
-
-newscan_faster_growth3NT.x: newscan_faster_growth3.cpp newscan_faster_growth3.hpp malloc_count.o utils.o xerrors.o 
-	$(CXX) $(CXX_FLAGS) -o $@ newscan_faster_growth3.cpp malloc_count.o utils.o xerrors.o -ldl -pthread -ltbb -DNOTHREADS
-
-pscan.x: pscan.cpp pscan.hpp malloc_count.o utils.o xerrors.o 
-	$(CXX) $(CXX_FLAGS) -o $@ pscan.cpp malloc_count.o utils.o xerrors.o -ldl -pthread
+piPFP_growth_NT.x: piPFP_growth.cpp piPFP_growth.hpp malloc_count.o utils.o xerrors.o 
+	$(CXX) $(CXX_FLAGS) -o $@ piPFP_growth.cpp malloc_count.o utils.o xerrors.o $(CXX_LIBS) -DNOTHREADS
 
 %.o: %.c %.h
 	$(CC) $(CFLAGS) -c -o $@ $<
