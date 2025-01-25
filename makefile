@@ -1,6 +1,6 @@
 # compilation flags
 CXX_FLAGS=-std=c++20 -O3 -Wall -Wextra -g -march=native
-CXX_LIBS=-ldl -pthread -I/opt/homebrew/Cellar/tbb/2022.0.0/include -L/opt/homebrew/Cellar/tbb/2022.0.0/lib -ltbb
+CXX_LIBS=-ldl -pthread -ltbb
 CFLAGS=-O3 -Wall -std=c11 -g
 CC=gcc
 CCX=g++
