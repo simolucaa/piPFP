@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <unordered_set>
+#include <cmath>
 
 #include <oneapi/tbb/concurrent_hash_map.h>
 

@@ -6,6 +6,7 @@ import subprocess
 import logging
 import csv
 import numpy as np
+from Bio import SeqIO
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Permute a FASTA file.')
@@ -81,6 +82,14 @@ def check_paths(input_path, output_path):
         logging.error(f" {' and '.join(missing_paths)} do not exist")
         exit(1)
 
+def is_fasta(filename):
+    try:
+        with open(filename, "r") as handle:
+            first_line = handle.readline().strip()
+            return first_line.startswith(">")
+    except Exception as e:
+        return False
+
 def write_tsv_pi(output_file, filename, window_size, modulus, dictionary_size, parse_size, pi):
     with open(output_file, 'w', newline='') as tsvfile:
         writer = csv.writer(tsvfile, delimiter='\t')
@@ -97,11 +106,11 @@ def calculate_pi(args):
     # Handle single-thread or multi-thread
     if args.threads:
         logging.info(f"Using {args.threads} threads")
-        cmd = f"./newscan_faster.x -w {args.window} -p {args.modulus} -t {args.threads} {args.input}" # Update file.x 
+        cmd = f"./piPFP.x -w {args.window} -p {args.modulus} -t {args.threads} {args.input}" # Update file.x 
         logging.info(f"Running command: {cmd}")
     else:
         logging.info("Running in single-thread mode")
-        cmd = f"./newscan_fasterNT.x -w {args.window} -p {args.modulus} {args.input}" # Update file.x 
+        cmd = f"./piPFP_NT.x -w {args.window} -p {args.modulus} {args.input}" # Update file.x 
         logging.info(f"Running command: {cmd}")
 
     # Run command
@@ -134,10 +143,21 @@ def write_tsv_alpha(output_file, filename, window_size, modulus, alpha):
         writer.writerow([filename, window_size, modulus, alpha])
 
 def calculate_alpha(args): 
-    ###--- To uncomment when the version with input folder is implemented ---###
-    # if os.path.isfile(args.input):
-    #     logging.error("Please provide a folder instead of a file")
-    #     exit(1)
+    if os.path.isfile(args.input):
+        logging.error("Please provide a folder instead of a file")
+        exit(1)
+    
+    non_fasta_files = []
+    for filename in os.listdir(args.input):
+        filepath = os.path.join(args.input, filename)
+        if os.path.isdir(filepath):
+            continue
+        if not is_fasta(filepath):
+            non_fasta_files.append(filename)
+
+    if non_fasta_files:
+        logging.error(f"The following files are not FASTA files:\n{', '.join(non_fasta_files)}\nPlease provide a folder containing only FASTA files.")
+        exit(1)
 
     logging.info(f"Calculating alpha value with w = {args.window} and p = {args.modulus}")
     logging.info(f"Input folder: {os.path.abspath(args.input)}")
@@ -148,11 +168,11 @@ def calculate_alpha(args):
     # Handle single-thread or multi-thread
     if args.threads:
         logging.info(f"Using {args.threads} threads")
-        cmd = f"./newscan_faster_growth3.x  -w {args.window} -p {args.modulus} -t {args.threads} -o {output_file} {args.input}" # Update file.x 
+        cmd = f"./piPFP_growth.x  -w {args.window} -p {args.modulus} -t {args.threads} -o {output_file} {args.input}" # Update file.x 
         logging.info(f"Running command: {cmd}")
     else:
         logging.info("Running in single-thread mode")
-        cmd = f"./newscan_faster_growth3.x -w {args.window} -p {args.modulus} -t 1 -o {output_file} {args.input}" # Update file.x (single-thread NT not working?)
+        cmd = f"./piPFP_growth_NT.x -w {args.window} -p {args.modulus} -o {output_file} {args.input}" # Update file.x (single-thread NT not working?)
         logging.info(f"Running command: {cmd}")
 
     # Run command
@@ -212,4 +232,3 @@ if __name__ == "__main__":
     else:
         logging.error("Invalid mode. Please select 'pi' or 'openness'")
         exit(1)
-        
