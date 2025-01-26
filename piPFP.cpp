@@ -18,28 +18,14 @@ extern "C" {
 using namespace std;
 using namespace oneapi::tbb;
 
-// =============== algorithm limits ===================
-// maximum number of distinct words
-#define MAX_DISTINCT_WORDS (INT32_MAX - 1)
-typedef uint32_t word_int_t;
-// Note: we can probably raise this to UINT32_MAX-1, but first
-// we need to remove the limitationon of 2^32-2 on the number
-// of words in the parsing (see bwtparse.c)
-
-// maximum number of occurrences of a single word
-#define MAX_WORD_OCC (UINT32_MAX)
-typedef uint32_t occ_int_t;
-
 // -------------------------------------------------------------
 // struct containing command line parameters and other globals
 struct Args {
   string inputFileName = "";
-  int w = 10;            // sliding window size and its default
-  int p = 100;           // modulus for establishing stopping w-tuples
-  bool SAinfo = false;   // compute SA information
-  bool compress = false; // parsing called in compress mode
-  int th = 0;            // number of helper threads
-  int verbose = 0;       // verbosity level
+  int w = 10;      // sliding window size and its default
+  int p = 100;     // modulus for establishing stopping w-tuples
+  int th = 0;      // number of helper threads
+  int verbose = 0; // verbosity level
 };
 
 // -----------------------------------------------------------------
@@ -125,13 +111,6 @@ uint64_t process_file(Args &arg,
 
   // main loop on the chars of the input file
   int c, pc = '\n', IN_HEADER = 1;
-  uint64_t pos = 0; // ending position +1 of previous word in the original text,
-                    // used for computing sa_info
-  assert(IBYTES <=
-         sizeof(pos)); // IBYTES bytes of pos are written to the sa info file
-  // init first word in the parsing with a Dollar char unless we are just
-  // compressing string word(""); if(!arg.compress) word.append(1,Dollar); init
-  // empty KR window: constructor only needs window size
   KR_window krw(arg.w);
   uint64_t currentWordLength = 1;
   uint64_t currentHash = Dollar;
@@ -159,6 +138,7 @@ uint64_t process_file(Args &arg,
           save_update_word(currentWordLength, currentHash, wordFreq);
           currentWordLength = arg.w;
           currentHash = krw.hash; // kr_hash(krw.get_window());
+          parseWords++;
         }
       }
     }
@@ -206,12 +186,6 @@ void parseArgs(int argc, char **argv, Args &arg) {
   string sarg;
   while ((c = getopt(argc, argv, "p:w:sht:vc")) != -1) {
     switch (c) {
-    case 's':
-      arg.SAinfo = true;
-      break;
-    case 'c':
-      arg.compress = true;
-      break;
     case 'w':
       sarg.assign(optarg);
       arg.w = stoi(sarg);
@@ -302,20 +276,9 @@ int main(int argc, char **argv) {
   cout << "Found " << totDWord << " distinct words" << endl;
   cout << "Parsing took: " << difftime(time(NULL), start_wc)
        << " wall clock seconds\n";
-  // check # distinct words
-  if (totDWord > MAX_DISTINCT_WORDS) {
-    cerr << "Emergency exit! The number of distinc words (" << totDWord
-         << ")\n";
-    cerr << "is larger than the current limit (" << MAX_DISTINCT_WORDS << ")\n";
-    exit(1);
-  }
 
   // -------------- second pass
   start_wc = time(NULL);
-  // create array of dictionary words
-  // vector<const string *> dictArray;
-  // dictArray.reserve(totDWord);
-  // fill array
   uint64_t sumLen = 0;
   for (auto &x : wordFreq) {
     sumLen += x.second;
@@ -326,19 +289,3 @@ int main(int argc, char **argv) {
        << " wall clock seconds\n";
   return 0;
 }
-
-// // sort dictionary
-//   sort(dictArray.begin(), dictArray.end(),pstringCompare);
-//   // write plain dictionary and occ file, also compute rank for each hash
-//   cout << "Writing plain dictionary and occ file\n";
-//   writeDictOcc(arg, wordFreq, dictArray);
-//   dictArray.clear(); // reclaim memory
-//   cout << "Dictionary construction took: " << difftime(time(NULL),start_wc)
-//   << " wall clock seconds\n";
-
-//   // remap parse file
-//   start_wc = time(NULL);
-//   cout << "Generating remapped parse file\n";
-//   remapParse(arg, wordFreq);
-//   cout << "Remapping parse file took: " << difftime(time(NULL),start_wc) <<
-//   " wall clock seconds\n";
