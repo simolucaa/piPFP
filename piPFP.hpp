@@ -1,3 +1,4 @@
+#include <cstdint>
 extern "C" {
 #include "xerrors.h"
 }
@@ -159,6 +160,7 @@ mt_process_file(Args &arg, concurrent_unordered_map<uint64_t, uint64_t> &wf) {
   mt_data td[arg.th];
   // scan file for start positions and execute threads
   FILE *fp = fopen(arg.inputFileName.c_str(), "r");
+  ifstream fp_read(arg.inputFileName);
   if (fp == NULL) {
     throw new std::runtime_error("Cannot open input file " + arg.inputFileName);
   }
@@ -171,7 +173,11 @@ mt_process_file(Args &arg, concurrent_unordered_map<uint64_t, uint64_t> &wf) {
   th_sts[0] = 0;
   for (int i = 1; i < arg.th; ++i) {
     th_sts[i] = (size_t)(size / arg.th) * i;
+    /* true_starts[i] = th_sts[i]; */
+    /* true_ends[i - 1] = th_sts[i]; */
   }
+  /* true_starts[0] = 0; */
+  /* true_ends[arg.th - 1] = size; */
   int IN_HEADER = 1;
   size_t true_pos = 0, file_pos = 0;
   int j = 0, pc = 0, c = 0;
@@ -179,18 +185,72 @@ mt_process_file(Args &arg, concurrent_unordered_map<uint64_t, uint64_t> &wf) {
   // for the threads, so they they don't accidently start in a ">" header.
   // As soon as a proper start and end position has been found, execute the
   // thread
-  while (((c = fgetc(fp)) != EOF)) {
+  /* while (((c = fgetc(fp)) != EOF)) { */
+  /*   if (j == arg.th) */
+  /*     break; */
+  /*   if (pc == '\n') */
+  /*     IN_HEADER = (c == '>'); */
+  /*   if (file_pos == th_sts[j]) { */
+  /*     if (IN_HEADER) { */
+  /*       th_sts[j]++; */
+  /*     } else { */
+  /*       true_starts[j] = true_pos; */
+  /*       if (j) { */
+  /*         true_ends[j - 1] = true_pos; */
+  /*         // prepare and execute thread j-1 */
+  /*         td[j - 1].wordFreq = &wf; */
+  /*         td[j - 1].arg = &arg; */
+  /*         td[j - 1].true_start = true_starts[j - 1]; */
+  /*         td[j - 1].true_end = true_ends[j - 1]; */
+  /*         td[j - 1].start = th_sts[j - 1]; // range start */
+  /*         td[j - 1].end = (j == arg.th) ? size : th_sts[j]; */
+  /*         xpthread_create(&t[j - 1], NULL, &mt_parse, &td[j - 1], __LINE__,
+   */
+  /*                         __FILE__); */
+  /*       } */
+  /*       ++j; */
+  /*       // check if previous thread spilled over computed start position of
+   */
+  /*       // next thread only possible in rare situations. */
+  /*       if (j && j < arg.th && th_sts[j - 1] >= th_sts[j]) { */
+  /*         th_sts[j] = file_pos + 1; */
+  /*       } */
+  /*     } */
+  /*   } */
+  /*   if (!IN_HEADER && c != '\n') */
+  /*     ++true_pos; */
+  /*   pc = c; */
+  /*   ++file_pos; */
+  /* } */
+  /* assert(j == arg.th); */
+  /* // execute the last thread */
+  /* true_ends[j - 1] = size; */
+  /* td[j - 1].wordFreq = &wf; */
+  /* td[j - 1].arg = &arg; */
+  /* td[j - 1].true_start = true_starts[j - 1]; */
+  /* td[j - 1].true_end = true_ends[j - 1]; */
+  /* td[j - 1].start = th_sts[j - 1]; // range start */
+  /* td[j - 1].end = size; */
+  /* xpthread_create(&t[j - 1], NULL, &mt_parse, &td[j - 1], __LINE__,
+   * __FILE__); */
+  /* fclose(fp); */
+
+  string line;
+  while (getline(fp_read, line)) {
     if (j == arg.th)
       break;
-    if (pc == '\n')
-      IN_HEADER = (c == '>');
-    if (file_pos == th_sts[j]) {
-      if (IN_HEADER)
-        th_sts[j]++;
-      else {
-        true_starts[j] = true_pos;
+    if (line[0] == '>') {
+      IN_HEADER = 1;
+    } else {
+      IN_HEADER = 0;
+    }
+    if (file_pos >= th_sts[j]) {
+      if (IN_HEADER) {
+        th_sts[j] += file_pos + line.size() + 1 - th_sts[j]; // line.size() + 1;
+      } else {
+        true_starts[j] = true_pos - (file_pos - th_sts[j] - (j > 0));
         if (j) {
-          true_ends[j - 1] = true_pos;
+          true_ends[j - 1] = true_pos - (file_pos - th_sts[j] - (j > 0));
           // prepare and execute thread j-1
           td[j - 1].wordFreq = &wf;
           td[j - 1].arg = &arg;
@@ -205,17 +265,17 @@ mt_process_file(Args &arg, concurrent_unordered_map<uint64_t, uint64_t> &wf) {
         // check if previous thread spilled over computed start position of
         // next thread only possible in rare situations.
         if (j && j < arg.th && th_sts[j - 1] >= th_sts[j]) {
-          th_sts[j] = file_pos + 1;
+          th_sts[j] = file_pos + line.size() + 1;
         }
       }
     }
-    if (!IN_HEADER && c != '\n')
-      ++true_pos;
-    pc = c;
-    ++file_pos;
+    if (!IN_HEADER)
+      true_pos += line.size();
+    file_pos += line.size() + 1;
   }
   assert(j == arg.th);
   // execute the last thread
+
   true_ends[j - 1] = size;
   td[j - 1].wordFreq = &wf;
   td[j - 1].arg = &arg;
@@ -225,6 +285,7 @@ mt_process_file(Args &arg, concurrent_unordered_map<uint64_t, uint64_t> &wf) {
   td[j - 1].end = size;
   xpthread_create(&t[j - 1], NULL, &mt_parse, &td[j - 1], __LINE__, __FILE__);
   fclose(fp);
+  fp_read.close();
 
   // wait for the threads to finish (in order) and close output files
   uint64_t tot_word = 0;
@@ -253,7 +314,8 @@ mt_process_file(Args &arg, concurrent_unordered_map<uint64_t, uint64_t> &wf) {
   /*   td[i].arg = &arg; */
   /*   td[i].start = i * (size / arg.th); // range start */
   /*   td[i].end = */
-  /*       (i + 1 == arg.th) ? size : (i + 1) * (size / arg.th); // range end */
+  /*       (i + 1 == arg.th) ? size : (i + 1) * (size / arg.th); // range end
+   */
 
   /*   assert(td[i].end <= size); */
   /*   xpthread_create(&t[i], NULL, &mt_parse, &td[i], __LINE__, __FILE__); */
