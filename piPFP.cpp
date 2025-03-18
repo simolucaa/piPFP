@@ -2,7 +2,6 @@
 #include <ctime>
 #include <fstream>
 #include <iostream>
-#include <oneapi/tbb/concurrent_unordered_map.h>
 #include <stdexcept>
 #include <stdint.h>
 #include <string>
@@ -15,8 +14,19 @@ extern "C" {
 #include "xerrors.h"
 }
 
+#include "growt/allocator/alignedallocator.hpp"
+#include "growt/data-structures/table_config.hpp"
+
+using hasher_type = utils_tm::hash_tm::murmur2_hash;
+using allocator_type = growt::AlignedAllocator<>;
+using table_type =
+    typename growt::table_config<uint64_t, uint64_t, hasher_type,
+                                 allocator_type, hmod::growable,
+                                 hmod::ref_integrity>::table_type;
+
+#include "flat_hash_map/bytell_hash_map.hpp"
+
 using namespace std;
-using namespace oneapi::tbb;
 
 // -------------------------------------------------------------
 // struct containing command line parameters and other globals
@@ -81,9 +91,11 @@ struct KR_window {
 };
 // -----------------------------------------------------------
 
-static void
-save_update_word(uint64_t currentWordLength, uint64_t hash,
-                 concurrent_unordered_map<uint64_t, uint64_t> &freq);
+static void save_update_word(uint64_t currentWordLength, uint64_t hash,
+                             table_type::handle_type &freq);
+
+static void save_update_word(uint64_t currentWordLength, uint64_t hash,
+                             ska::bytell_hash_map<uint64_t, uint64_t> &freq);
 
 #ifndef NOTHREADS
 #include "piPFP.hpp"
@@ -91,16 +103,25 @@ save_update_word(uint64_t currentWordLength, uint64_t hash,
 
 // save current word in the freq map and update it leaving only the
 // last minsize chars which is the overlap with next word
-static void
-save_update_word(uint64_t currentWordLength, uint64_t hash,
-                 concurrent_unordered_map<uint64_t, uint64_t> &freq) {
-  freq.insert({hash, currentWordLength});
+static void save_update_word(uint64_t currentWordLength, uint64_t hash,
+                             table_type::handle_type &handle) {
+  //  concurrent_unordered_map<uint64_t, uint64_t> &freq) {
+  // table_type::handle_type handle = freq.get_handle();
+  handle.insert(hash, currentWordLength);
+}
+
+static void save_update_word(uint64_t currentWordLength, uint64_t hash,
+                             ska::bytell_hash_map<uint64_t, uint64_t> &handle) {
+  //  concurrent_unordered_map<uint64_t, uint64_t> &freq) {
+  // table_type::handle_type handle = freq.get_handle();
+  handle.insert({hash, currentWordLength});
 }
 
 // prefix free parse of file fnam. w is the window size, p is the modulus
 // use a KR-hash as the word ID that is immediately written to the parse file
 uint64_t process_file(Args &arg,
-                      concurrent_unordered_map<uint64_t, uint64_t> &wordFreq) {
+                      ska::bytell_hash_map<uint64_t, uint64_t> &wordFreq) {
+  // concurrent_unordered_map<uint64_t, uint64_t> &wordFreq) {
   // open a, possibly compressed, input file
   string fnam = arg.inputFileName;
   ifstream f(fnam);
@@ -124,7 +145,11 @@ uint64_t process_file(Args &arg,
       currentHash += (256 * currentHash + c) % prime;
       uint64_t hash = krw.addchar(c);
       if (hash % arg.p == 0) {
+        // cout << "Trying to save " << currentWordLength << " " << currentHash
+        // << " (" << parseWords << ")" << endl;
         save_update_word(currentWordLength, currentHash, wordFreq);
+        // cout << "Saved " << currentWordLength << " " << currentHash << " ("
+        // << parseWords << ")" << endl;
         currentWordLength = arg.w;
         currentHash = krw.hash; // kr_hash(krw.get_window());
         parseWords++;
@@ -249,14 +274,26 @@ int main(int argc, char **argv) {
   time_t start_main = time(NULL);
   time_t start_wc = start_main;
   // init sorted map counting the number of occurrences of each word
-  concurrent_unordered_map<uint64_t, uint64_t> wordFreq;
+  // concurrent_unordered_map<uint64_t, uint64_t> wordFreq;
+#ifdef NOTHREADS
+
+#else
+
+#endif
   pair<uint64_t, uint64_t> totCharAndWord;
+  uint64_t totDWord = 0;
+  uint64_t sumLen = 0;
 
   // ------------ parsing input file
   try {
     if (arg.th == 0) {
       cout << "Parsing input file\n";
+      ska::bytell_hash_map<uint64_t, uint64_t> wordFreq(10000);
       totCharAndWord.second = process_file(arg, wordFreq);
+      for (auto &it : wordFreq) {
+        totDWord++;
+        sumLen += it.second;
+      }
     } else {
       cout << "Parsing input file using " << arg.th << " threads\n";
 #ifdef NOTHREADS
@@ -264,7 +301,13 @@ int main(int argc, char **argv) {
            << arg.th << " threads\n";
       exit(EXIT_FAILURE);
 #else
+      table_type wordFreq(10000);
       totCharAndWord = mt_process_file(arg, wordFreq);
+      table_type::handle_type handle = wordFreq.get_handle();
+      for (auto it = handle.begin(); it != handle.end(); it++) {
+        totDWord++;
+        sumLen += it->second;
+      }
 #endif
     }
   } catch (const std::bad_alloc &) {
@@ -272,17 +315,14 @@ int main(int argc, char **argv) {
     die("bad alloc exception");
   }
   // first report
-  uint64_t totDWord = wordFreq.size();
+
+  // -------------- second pass
+  // start_wc = time(NULL);
+
   cout << "Found " << totDWord << " distinct words" << endl;
   cout << "Parsing took: " << difftime(time(NULL), start_wc)
        << " wall clock seconds\n";
 
-  // -------------- second pass
-  start_wc = time(NULL);
-  uint64_t sumLen = 0;
-  for (auto &x : wordFreq) {
-    sumLen += x.second;
-  }
   cout << "Sum of lenghts of dictionary words: " << sumLen << endl;
   cout << "Total number of words: " << totCharAndWord.second + 1 << endl;
   cout << "==== Elapsed time: " << difftime(time(NULL), start_main)

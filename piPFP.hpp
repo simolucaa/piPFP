@@ -6,7 +6,8 @@ pthread_mutex_t map_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // struct shared via mt_parse
 typedef struct {
-  concurrent_unordered_map<uint64_t, uint64_t> *wordFreq; // shared dictionary
+  // concurrent_unordered_map<uint64_t, uint64_t> *wordFreq; // shared dictionary
+  table_type *wordFreq;
   Args *arg;                                              // command line input
   long skipped, parsed, words;                            // output
   long true_start, true_end, start, end;                  // input
@@ -31,7 +32,9 @@ void *mt_parse(void *dx) {
   // extract input data
   mt_data *d = (mt_data *)dx;
   Args *arg = d->arg;
-  concurrent_unordered_map<uint64_t, uint64_t> *wordFreq = d->wordFreq;
+  table_type *wordFreq = d->wordFreq;
+  table_type::handle_type handle = wordFreq->get_handle();
+  // concurrent_unordered_map<uint64_t, uint64_t> *wordFreq = d->wordFreq;
 
   if (arg->verbose > 1)
     printf("Scanning from %ld, size %ld\n", d->start, d->end - d->start);
@@ -96,7 +99,7 @@ void *mt_parse(void *dx) {
       uint64_t hash = krw.addchar(c);
       d->parsed++;
       if (hash % arg->p == 0 && d->parsed > arg->w) {
-        save_update_word(currentWordLength, currentHash, *wordFreq);
+        save_update_word(currentWordLength, currentHash, handle);
         currentWordLength = arg->w;
         currentHash = krw.hash; // kr_hash(krw.get_window());
         d->words++;
@@ -112,7 +115,7 @@ void *mt_parse(void *dx) {
         uint64_t hash = krw.addchar(c);
         /* d->parsed++; */
         if (hash % arg->p == 0 && d->parsed > arg->w) {
-          save_update_word(currentWordLength, currentHash, *wordFreq);
+          save_update_word(currentWordLength, currentHash, handle);
           currentWordLength = arg->w;
           currentHash = krw.hash; // kr_hash(krw.get_window());
           d->words++;
@@ -136,7 +139,7 @@ void *mt_parse(void *dx) {
   currentHash += (256 * currentHash + c) % prime;
   uint64_t hash = krw.addchar(c);
   if (hash % arg->p == 0 && d->parsed > arg->w) {
-    save_update_word(currentWordLength, currentHash, *wordFreq);
+    save_update_word(currentWordLength, currentHash, handle);
     currentWordLength = arg->w;
     currentHash = krw.hash; // kr_hash(krw.get_window());
     d->words++;
@@ -145,7 +148,7 @@ void *mt_parse(void *dx) {
     currentWordLength++;
     currentHash += (256 * currentHash + Dollar) % prime;
   }
-  save_update_word(currentWordLength, currentHash, *wordFreq);
+  save_update_word(currentWordLength, currentHash, handle);
   // close input file and return
   f.close();
   return NULL;
@@ -154,7 +157,8 @@ void *mt_parse(void *dx) {
 // prefix free parse of file fnam. w is the window size, p is the modulus
 // use a KR-hash as the word ID that is written to the parse file
 pair<uint64_t, uint64_t>
-mt_process_file(Args &arg, concurrent_unordered_map<uint64_t, uint64_t> &wf) {
+// mt_process_file(Args &arg, concurrent_unordered_map<uint64_t, uint64_t> &wf) {
+mt_process_file(Args &arg, table_type &wf) {
   assert(arg.th > 0);
   pthread_t t[arg.th];
   mt_data td[arg.th];

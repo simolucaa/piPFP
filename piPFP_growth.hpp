@@ -1,7 +1,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <sys/types.h>
-#include <unordered_set>
 extern "C" {
 #include "xerrors.h"
 }
@@ -10,7 +9,6 @@ extern "C" {
 #include <iostream>
 #include <stdint.h>
 using namespace std;
-using namespace oneapi::tbb;
 
 #include <atomic>
 #include <condition_variable>
@@ -27,8 +25,8 @@ static bool endOfProducer = false;
 
 // struct shared via mt_parse
 typedef struct {
-  vector<unordered_set<uint64_t>> *wordFreq; // shared dictionary
-  concurrent_hash_map<uint64_t, uint32_t> *cumulativeWordFreq;
+  vector<ska::bytell_hash_set<uint64_t>> *wordFreq; // shared dictionary
+  table_type *cumulativeWordFreq;
   Args *arg;                   // command line input
   long skipped, parsed, words; // output
   uint32_t startingSeqNumber;
@@ -55,7 +53,8 @@ void *mt_parse(void *dx) {
   // extract input data
   mt_data *d = (mt_data *)dx;
   Args *arg = d->arg;
-  unordered_set<uint64_t> *wordFreq = &d->wordFreq->data()[d->nth_thread];
+  ska::bytell_hash_set<uint64_t> *wordFreq = &d->wordFreq->data()[d->nth_thread];
+  table_type::handle_type handle = d->cumulativeWordFreq->get_handle();
 
   // open input file
   ifstream f(d->fileName);
@@ -90,7 +89,7 @@ void *mt_parse(void *dx) {
     pc = c;
   }
   save_update_word(currentHash, *wordFreq);
-  mergeThreadHashMapToCollectiveMap(*wordFreq, *d->cumulativeWordFreq);
+  mergeThreadHashMapToCollectiveMap(*wordFreq, handle);
   wordFreq->clear();
   f.close();
   return NULL;
@@ -104,7 +103,8 @@ void producer(const std::string &data_directory, const uint32_t numConsumers) {
   uint32_t LIMIT = numConsumers;
   for (auto &file : filesystem::directory_iterator(data_directory)) {
     std::unique_lock<std::mutex> lock(mtx);
-    cv.wait(lock, [numConsumers] { return dataQueue.size() <= numConsumers; });
+    cv.wait(lock,
+            [numConsumers] { return dataQueue.size() <= 2 * numConsumers; });
     dataQueue.emplace(string(file.path()));
     cv.notify_one();
     sequenceCount++;
@@ -112,9 +112,8 @@ void producer(const std::string &data_directory, const uint32_t numConsumers) {
 
   endOfProducer = true;
 
-  /* std::cout << "Producer finished reading " << sequenceCount << " sequences."
-   */
-  /*           << std::endl; */
+  std::cout << "Producer finished reading " << sequenceCount << " sequences."
+            << std::endl;
   while (consumer_stop_counter < numConsumers) {
     cv.notify_all();
 
@@ -135,11 +134,10 @@ void consumer(const uint32_t id, mt_data arg) {
       // We hold the lock after calling .wait(), so it is safe to access the
       // dataQueue.
       if (dataQueue.empty() && endOfProducer) {
-        /* std::cout << "consumer_stop_counter: " << consumer_stop_counter <<
-         * "\n"; */
+        // std::cout << "consumer_stop_counter: " << consumer_stop_counter << "\n";
         consumer_stop_counter++;
-        /* std::cout << "Consumer " << id << " finished all the computation." */
-        /*           << std::endl; */
+        // std::cout << "Consumer " << id << " finished all the computation."
+        //           << std::endl;
         return;
       }
     }
@@ -158,28 +156,34 @@ void consumer(const uint32_t id, mt_data arg) {
 
 // prefix free parse of file fnam. w is the window size, p is the modulus
 // use a KR-hash as the word ID that is written to the parse file
-uint32_t mt_process_file(Args &arg, vector<unordered_set<uint64_t>> &wf,
-                         concurrent_hash_map<uint64_t, uint32_t> &cwf) {
+uint32_t mt_process_file(Args &arg, vector<ska::bytell_hash_set<uint64_t>> &wf,
+                         table_type &cwf) {
 
-  thread producerThread(producer, arg.data_directory, arg.th - 1);
+  thread producerThread(producer, arg.data_directory, arg.th);
   vector<thread> consumers;
+  consumers.reserve(arg.th);
+  cout << "Parsing input file using " << arg.th << " threads\n";
   mt_data td[arg.th];
-  for (int i = 0; i < arg.th - 1; i++) {
+  cout << "Parsing input file\n";
+  for (int i = 0; i < arg.th; i++) {
+    // cout << "Creating thread " << i << endl;
     td[i].wordFreq = &wf;
     td[i].cumulativeWordFreq = &cwf;
     td[i].arg = &arg;
     td[i].nth_thread = i;
 
     consumers.push_back(thread(consumer, i, td[i]));
+    // cout << "Thread " << i << " created" << endl;
   }
 
   producerThread.join();
 
-  for (int i = 0; i < arg.th - 1; i++) {
+  for (int i = 0; i < arg.th; i++) {
     consumers[i].join();
   }
 
   cv.notify_all();
 
+  // cout << "All threads finished." << endl;
   return sequenceCount;
 }

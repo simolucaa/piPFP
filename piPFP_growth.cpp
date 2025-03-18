@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <cmath>
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
@@ -8,29 +9,24 @@
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <unordered_set>
-#include <cmath>
-
-#include <oneapi/tbb/concurrent_hash_map.h>
 
 extern "C" {
 #include "utils.h"
 }
 
+#include "growt/allocator/alignedallocator.hpp"
+#include "growt/data-structures/table_config.hpp"
+
+using hasher_type = utils_tm::hash_tm::murmur2_hash;
+using allocator_type = growt::AlignedAllocator<>;
+using table_type =
+    typename growt::table_config<uint64_t, uint32_t, hasher_type,
+                                 allocator_type, hmod::growable,
+                                 hmod::ref_integrity>::table_type;
+
+#include "flat_hash_map/bytell_hash_map.hpp"
+
 using namespace std;
-using namespace oneapi::tbb;
-
-// =============== algorithm limits ===================
-// maximum number of distinct words
-#define MAX_DISTINCT_WORDS (INT32_MAX - 1)
-typedef uint32_t word_int_t;
-// Note: we can probably raise this to UINT32_MAX-1, but first
-// we need to remove the limitationon of 2^32-2 on the number
-// of words in the parsing (see bwtparse.c)
-
-// maximum number of occurrences of a single word
-#define MAX_WORD_OCC (UINT32_MAX)
-typedef uint32_t occ_int_t;
 
 // -------------------------------------------------------------
 // struct containing command line parameters and other globals
@@ -95,40 +91,54 @@ struct KR_window {
 };
 // -----------------------------------------------------------
 
-static void save_update_word(uint64_t hash, unordered_set<uint64_t> &freq);
-static void mergeThreadHashMapToCollectiveMap(
-    unordered_set<uint64_t> &threadMap,
-    concurrent_hash_map<uint64_t, uint32_t> &collectiveMap);
+static void save_update_word(uint64_t hash,
+                             ska::bytell_hash_set<uint64_t> &freq);
+static void
+mergeThreadHashMapToCollectiveMap(ska::bytell_hash_set<uint64_t> &threadMap,
+                                  table_type::handle_type &collectiveMap);
 
 #ifndef NOTHREADS
 #include "piPFP_growth.hpp"
 #endif
 
+struct Increment {
+  uint32_t operator()(uint32_t &lhs, const uint32_t &rhs) const {
+    return lhs += rhs;
+  }
+
+  // an atomic implementation can improve the performance of updates in .sGrow
+  // this will be detected automatically
+  uint32_t atomic(uint32_t &lhs, const uint32_t &rhs) const {
+    return __sync_fetch_and_add(&lhs, rhs);
+  }
+};
+
 // save current word in the freq map and update it leaving only the
 // last minsize chars which is the overlap with next word
-static void save_update_word(uint64_t hash, unordered_set<uint64_t> &freq) {
+static void save_update_word(uint64_t hash,
+                             ska::bytell_hash_set<uint64_t> &freq) {
   freq.insert(hash);
 }
 
-static void mergeThreadHashMapToCollectiveMap(
-    unordered_set<uint64_t> &threadMap,
-    concurrent_hash_map<uint64_t, uint32_t> &collectiveMap) {
+static void
+mergeThreadHashMapToCollectiveMap(ska::bytell_hash_set<uint64_t> &threadMap,
+                                  table_type::handle_type &collectiveMap) {
 
-  concurrent_hash_map<uint64_t, uint32_t>::accessor a;
+  // table_type::accessor a;
+
   for (auto &x : threadMap) {
-    auto inserted = collectiveMap.insert(a, {x, 1});
-    if (inserted == false) {
-      a->second++;
-    }
-    a.release();
+    collectiveMap.insert_or_update(x, static_cast<const uint32_t>(1),
+                                   Increment(), static_cast<const uint32_t>(1));
   }
 }
 
-uint32_t process_file(Args &arg, unordered_set<uint64_t> &currentHS,
-                      concurrent_hash_map<uint64_t, uint32_t> &wordFreq) {
+uint32_t process_file(Args &arg, ska::bytell_hash_set<uint64_t> &currentHS,
+                      table_type &wordFreq) {
+  table_type::handle_type handle = wordFreq.get_handle();
   uint32_t n_sequences = 0;
   uint64_t n_chars_parsed = 0;
   uint64_t n_ts = 0;
+  uint64_t n_words = 0;
   KR_window krw(arg.w);
   const uint64_t prime = 27162335252586509;
   for (auto &file : filesystem::directory_iterator(arg.data_directory)) {
@@ -151,11 +161,13 @@ uint32_t process_file(Args &arg, unordered_set<uint64_t> &currentHS,
         uint64_t hash = krw.addchar(c);
         if (hash % arg.p == 0) {
           n_ts++;
+          n_words++;
           save_update_word(currentHash, currentHS);
           currentHash = krw.hash;
         }
       } else {
         if (c == '\n' && IN_HEADER && currentHash != Dollar) {
+          n_words++;
           save_update_word(currentHash, currentHS);
           currentHash = Dollar;
         }
@@ -163,8 +175,9 @@ uint32_t process_file(Args &arg, unordered_set<uint64_t> &currentHS,
       pc = c;
     }
     n_ts++;
+    n_words++;
     save_update_word(currentHash, currentHS);
-    mergeThreadHashMapToCollectiveMap(currentHS, wordFreq);
+    mergeThreadHashMapToCollectiveMap(currentHS, handle);
     currentHS.clear();
     krw.reset();
     n_sequences++;
@@ -174,7 +187,7 @@ uint32_t process_file(Args &arg, unordered_set<uint64_t> &currentHS,
   cout << "Number of characters parsed " << n_chars_parsed + n_sequences
        << endl;
   cout << "Number of sequences parsed " << n_sequences << endl;
-  cout << "Number of words " << wordFreq.size() << endl;
+  cout << "Number of words " << n_words << endl;
   cout << "Number of trigger strings " << n_ts << endl;
 
   return n_sequences;
@@ -263,8 +276,9 @@ int main(int argc, char **argv) {
   time_t start_wc = start_main;
 
   uint32_t totSeqNumber = 0;
-  vector<unordered_set<uint64_t>> wordFreq(arg.th ? arg.th : 1);
-  concurrent_hash_map<uint64_t, uint32_t> cumulativeWordFreq;
+  vector<ska::bytell_hash_set<uint64_t>> wordFreq(arg.th ? arg.th : 1);
+  table_type cumulativeWordFreq(10000);
+  table_type::handle_type handle = cumulativeWordFreq.get_handle();
 
   // ------------ parsing input file
   try {
@@ -288,12 +302,13 @@ int main(int argc, char **argv) {
   // fill array
   auto time1 = chrono::high_resolution_clock::now();
   uint64_t *histogram = new uint64_t[totSeqNumber + 1]();
-  for (auto &x : cumulativeWordFreq) {
-    histogram[x.second]++;
+  // for (auto &x : cumulativeWordFreq) {
+  for (auto it = handle.begin(); it != handle.end(); it++) {
+    histogram[it->second]++;
   }
   // print to file the histogram
   ofstream histFile(arg.outputFileName + ".hist");
-  for (uint32_t i = 1; i < totSeqNumber; i++) {
+  for (uint32_t i = 1; i <= totSeqNumber; i++) {
     histFile << histogram[i] << endl;
   }
   histFile.close();
