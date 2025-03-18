@@ -38,7 +38,7 @@ The output is a `.tsv` file containing the following information: Filename, Wind
 `piPFP openness` accepts a directory containing only FASTA files as input. You can use the following command:  
 
 ```bash
-./piPFP -m openness -w [WINDOW] -p [MODULUS] -t [THREADS] -i [INPUT] -o [OUTPUT]
+./piPFP.py -m openness -w [WINDOW] -p [MODULUS] -t [THREADS] -i [INPUT] -o [OUTPUT]
 ```
 
 If `-t` is not specified, the tool will run in single-thread mode. If `-w` and `-p` are not specified, piPFP will default to $4,10$.
