@@ -15,6 +15,10 @@
 ```bash
 git clone https://github.com/simolucaa/piPFP.git
 cd piPFP
+git submodule update --init --recursive
+mkdir build
+cd build
+cmake ..
 make
 ```
 
